@@ -32,6 +32,9 @@
 #include <time.h>
 #include <unistd.h>
 #include <sys/time.h>
+#ifdef CONFIG_NCURSES
+#include <ncurses.h>
+#endif
 #include "serial.h"
 #include "custom-rts.h"
 #include "version-git.h"
@@ -327,7 +330,13 @@ static const char * short_options = "m:a:r:c:t:1l:o:p:b:d:s:P:u0WRFhVvwBq";
 
 /* private functions ======================================================== */
 void vAllocate (xMbPollContext * ctx);
-void vPrintReadValues (int iAddr, int iCount, xMbPollContext * ctx);
+void vPrintReadValuesNormal (int iAddr, int iCount, xMbPollContext * ctx);
+void vPrintReadValuesCurses (int iAddr, int iCount, xMbPollContext * ctx);
+#if defined(CONFIG_NCURSES)
+#define vPrintReadValues(a, b, c) vPrintReadValuesCurses((a), (b), (c))
+#else
+#define vPrintReadValues(a, b, c) vPrintReadValuesNormal((a), (b), (c))
+#endif
 void vPrintConfig (const xMbPollContext * ctx);
 void vPrintCommunicationSetup (const xMbPollContext * ctx);
 void vReportSlaveID (const xMbPollContext * ctx);
@@ -427,6 +436,9 @@ main (int argc, char **argv) {
 
   progname = argv[0];
 
+#ifdef CONFIG_NCURSES
+  initscr();
+#endif
   do  {
 
     iNextOption = getopt (argc, argv, short_options);
@@ -929,21 +941,22 @@ main (int argc, char **argv) {
       }
       else {
         int i;
-
+        static int k = 0;
         // Lecture -------------------------------------------------------------
         for (i = 0; i < ctx.iSlaveCount; i++) {
 
           modbus_set_slave (ctx.xBus, ctx.piSlaveAddr[i]);
           ctx.iTxCount++;
-
-          printf ("-- Polling slave %d...", ctx.piSlaveAddr[i]);
+          int x, y;
+          getyx(stdscr, y, x);
+          printw ("-- [%d] Polling slave %d...", k++, ctx.piSlaveAddr[i]);
           if (ctx.bIsPolling) {
 
-            printf (" Ctrl-C to stop)\n");
+            printw (" Ctrl-C to stop)\n");
           }
           else {
 
-            putchar ('\n');
+            addch ('\n');
           }
 
           int j;
@@ -980,6 +993,8 @@ main (int argc, char **argv) {
 
               ctx.iRxCount++;
               vPrintReadValues (ctx.piStartRef[j], ctx.iCount, &ctx);
+              move(y, x);
+
             }
             else {
               ctx.iErrorCount++;
@@ -1000,6 +1015,9 @@ main (int argc, char **argv) {
   }
 
   vSigIntHandler (SIGTERM);
+#ifdef CONFIG_NCURSES
+  endwin();
+#endif
   return 0;
 }
 
@@ -1008,7 +1026,7 @@ main (int argc, char **argv) {
 
 // -----------------------------------------------------------------------------
 void
-vPrintReadValues (int iAddr, int iCount, xMbPollContext * ctx) {
+vPrintReadValuesNormal (int iAddr, int iCount, xMbPollContext * ctx) {
   int i;
   for (i = 0; i < iCount; i++) {
 
@@ -1067,6 +1085,70 @@ vPrintReadValues (int iAddr, int iCount, xMbPollContext * ctx) {
     putchar ('\n');
   }
 }
+#if defined(CONFIG_NCURSES)
+void
+vPrintReadValuesCurses (int iAddr, int iCount, xMbPollContext * ctx) {
+  int i;
+  for (i = 0; i < iCount; i++) {
+
+    printw("[%d]: \t", iAddr);
+
+    switch (ctx->eFormat) {
+      case eFormatBin:
+        printw("%c", (DUINT8 (ctx->pvData, i) != FALSE) ? '1' : '0');
+        iAddr++;
+        break;
+
+      case eFormatDec: {
+        uint16_t v = DUINT16 (ctx->pvData, i);
+        if (v & 0x8000) {
+
+          printw ("%u (%d)", v, (int) (int16_t) v);
+        }
+        else {
+
+          printw ("%u", v);
+        }
+        iAddr++;
+
+      }
+      break;
+
+      case eFormatInt16:
+        printw ("%d", (int) (int16_t) (DUINT16 (ctx->pvData, i)));
+        iAddr++;
+        break;
+
+      case eFormatHex:
+        printw ("0x%04X", DUINT16 (ctx->pvData, i));
+        iAddr++;
+        break;
+
+      case eFormatString:
+        printw ("%c%c", (char) ((int) (DUINT16 (ctx->pvData, i) / 256)), (char) (DUINT16 (ctx->pvData, i) % 256));
+        iAddr++;
+        break;
+
+      case eFormatInt:
+        printw ("%d", lSwapLong (DINT32 (ctx->pvData, i)));
+        iAddr += 2;
+        break;
+
+      case eFormatFloat:
+        printw ("%g", fSwapFloat (DFLOAT (ctx->pvData, i)));
+        iAddr += 2;
+        break;
+
+      default:  // Impossible normalement
+        break;
+    }
+    addch ('\n');
+  }
+  refresh();
+}
+#else
+#define vPrintReadValuesCurses(a, b, c)
+#endif
 
 // -----------------------------------------------------------------------------
 void
@@ -1075,8 +1157,8 @@ vReportSlaveID (const xMbPollContext * ctx) {
 
   modbus_set_slave (ctx->xBus, ctx->piSlaveAddr[0]);
   // Affichage de la configuration
-  printf ("Protocol configuration: Modbus %s\n", sModeList[ctx->eMode]);
-  printf ("Slave configuration...: address = %d, report slave id\n",
+  printw ("Protocol configuration: Modbus %s\n", sModeList[ctx->eMode]);
+  printw ("Slave configuration...: address = %d, report slave id\n",
           ctx->piSlaveAddr[0]);
 
   vPrintCommunicationSetup (ctx);
@@ -1093,7 +1175,7 @@ vReportSlaveID (const xMbPollContext * ctx) {
     if (iRet > 1) {
       int iLen = iRet - 2;
 
-      printf (
+      printw (
         "Length: %d\n"
         "Id    : 0x%02X\n"
         "Status: %s\n"
@@ -1104,7 +1186,7 @@ vReportSlaveID (const xMbPollContext * ctx) {
 
       if (iLen > 0) {
         int i;
-        printf ("Data  : ");
+        printw ("Data  : ");
         for (i = 2; i < (iLen + 2); i++) {
 
           if (isprint (ucReport[i])) {
@@ -1113,10 +1195,10 @@ vReportSlaveID (const xMbPollContext * ctx) {
           }
           else {
 
-            printf ("\\%02X", ucReport[i]);
+            printw ("\\%02X", ucReport[i]);
           }
         }
-        putchar ('\n');
+        addch ('\n');
       }
     }
     else {
@@ -1124,6 +1206,7 @@ vReportSlaveID (const xMbPollContext * ctx) {
       fprintf (stderr, "no data available\n");
     }
   }
+  refresh();
 }
 
 // -----------------------------------------------------------------------------
@@ -1147,7 +1230,7 @@ vPrintCommunicationSetup (const xMbPollContext * ctx) {
 // -----------------------------------------------------------------------------
 #endif /* USE_CHIPIO defined */
 
-    printf ("Communication.........: %s%s, %s\n"
+    printw ("Communication.........: %s%s, %s\n"
             "                        t/o %.2f s, poll rate %d ms\n"
             , ctx->sDevice
             , sAddStr
@@ -1157,12 +1240,13 @@ vPrintCommunicationSetup (const xMbPollContext * ctx) {
   }
   else {
 
-    printf ("Communication.........: %s, port %s, t/o %.2f s, poll rate %d ms\n"
+    printw ("Communication.........: %s, port %s, t/o %.2f s, poll rate %d ms\n"
             , ctx->sDevice
             , ctx->sTcpPort
             , ctx->dTimeout
             , ctx->iPollRate);
   }
+  refresh();
 }
 
 // -----------------------------------------------------------------------------
@@ -1170,60 +1254,61 @@ void
 vPrintConfig (const xMbPollContext * ctx) {
 
   // Affichage de la configuration
-  printf ("Protocol configuration: Modbus %s\n", sModeList[ctx->eMode]);
-  printf ("Slave configuration...: address = ");
+  printw ("Protocol configuration: Modbus %s\n", sModeList[ctx->eMode]);
+  printw ("Slave configuration...: address = ");
   vPrintIntList (ctx->piSlaveAddr, ctx->iSlaveCount);
   if (ctx->iStartCount > 1) {
-    printf ("\n                        start reference = ");
+    printw ("\n                        start reference = ");
     vPrintIntList (ctx->piStartRef, ctx->iStartCount);
-    printf ("\n");
+    addch ('\n');
   }
   else {
-    printf ("\n                        start reference = %d, count = %d\n",
+    printw ("\n                        start reference = %d, count = %d\n",
             ctx->piStartRef[0], ctx->iCount);
   }
   vPrintCommunicationSetup (ctx);
-  printf ("Data type.............: ");
+  printw ("Data type.............: ");
   switch (ctx->eFunction) {
 
     case eFuncDiscreteInput:
-      printf ("discrete input\n");
+      printw ("discrete input\n");
       break;
 
     case eFuncCoil:
-      printf ("discrete output (coil)\n");
+      printw ("discrete output (coil)\n");
       break;
 
     case eFuncInputReg:
       if (ctx->eFormat == eFormatInt) {
-        printf ("%s %s", sIntStr, ctx->bIsBigEndian ? sBigEndianStr : sLittleEndianStr);
+        printw ("%s %s", sIntStr, ctx->bIsBigEndian ? sBigEndianStr : sLittleEndianStr);
       }
       else if (ctx->eFormat == eFormatFloat) {
-        printf ("%s %s", sFloatStr, ctx->bIsBigEndian ? sBigEndianStr : sLittleEndianStr);
+        printw  ("%s %s", sFloatStr, ctx->bIsBigEndian ? sBigEndianStr : sLittleEndianStr);
       }
       else {
-        printf ("%s", sWordStr);
+        printw ("%s", sWordStr);
       }
-      printf (", input register table\n");
+      printw (", input register table\n");
       break;
 
     case eFuncHoldingReg:
       if (ctx->eFormat == eFormatInt) {
-        printf ("%s %s", sIntStr, ctx->bIsBigEndian ? sBigEndianStr : sLittleEndianStr);
+        printw ("%s %s", sIntStr, ctx->bIsBigEndian ? sBigEndianStr : sLittleEndianStr);
       }
       else if (ctx->eFormat == eFormatFloat) {
-        printf ("%s %s", sFloatStr, ctx->bIsBigEndian ? sBigEndianStr : sLittleEndianStr);
+        printw ("%s %s", sFloatStr, ctx->bIsBigEndian ? sBigEndianStr : sLittleEndianStr);
       }
       else {
-        printf ("%s", sWordStr);
+        printw ("%s", sWordStr);
       }
-      printf (", output (holding) register table\n");
+      printw (", output (holding) register table\n");
       break;
 
     default: // Impossible, la valeur a été vérifiée, évite un warning de gcc
       break;
   }
-  putchar ('\n');
+  addch ('\n');
+  refresh();
 }
 
 // -----------------------------------------------------------------------------
@@ -1264,7 +1349,7 @@ vSigIntHandler (int sig) {
 
   if ( (ctx.bIsPolling) && (!ctx.bIsWrite)) {
 
-    printf ("--- %s poll statistics ---\n"
+    printw ("--- %s poll statistics ---\n"
             "%d frames transmitted, %d received, %d errors, %.1f%% frame loss\n",
             ctx.sDevice,
             ctx.iTxCount,
@@ -1285,12 +1370,15 @@ vSigIntHandler (int sig) {
 // -----------------------------------------------------------------------------
 #endif /* USE_CHIPIO defined */
   if (sig == SIGINT) {
-    printf ("\neverything was closed.\nHave a nice day !\n");
+    printw ("\neverything was closed.\nHave a nice day !\n");
   }
   else {
-    putchar ('\n');
+    addch('\n');
   }
-  fflush (stdout);
+  refresh();
+#ifdef CONFIG_NCURSES
+  endwin();
+#endif
   exit (ctx.iErrorCount == 0 ? EXIT_SUCCESS : EXIT_FAILURE);
 }
 
@@ -1318,14 +1406,16 @@ vFailureExit (bool bHelp, const char *format, ...) {
 // -----------------------------------------------------------------------------
 void
 vVersion (void)  {
-  printf ("%s\n", VERSION_SHORT);
+  printw ("%s\n", VERSION_SHORT);
+  refresh();
+  endwin();
   exit (EXIT_SUCCESS);
 }
 
 // -----------------------------------------------------------------------------
 void
 vWarranty (void) {
-  printf (
+  printw (
     "Copyright © 2015-2019 %s, All rights reserved.\n\n"
 
     " mbpoll is free software: you can redistribute it and/or modify\n"
@@ -1341,18 +1431,21 @@ vWarranty (void) {
     " You should have received a copy of the GNU General Public License\n"
     " along with mbpoll. If not, see <http://www.gnu.org/licenses/>.\n",
     AUTHORS);
+  refresh();
+  endwin();
   exit (EXIT_SUCCESS);
 }
 
 // -----------------------------------------------------------------------------
 void
 vHello (void) {
-  printf ("mbpoll %s - FieldTalk(tm) Modbus(R) Master Simulator\n",
+  printw ("mbpoll %s - FieldTalk(tm) Modbus(R) Master Simulator\n",
           VERSION_SHORT);
-  printf ("Copyright © 2015-2019 %s, %s\n", AUTHORS, WEBSITE);
-  printf ("This program comes with ABSOLUTELY NO WARRANTY.\n");
-  printf ("This is free software, and you are welcome to redistribute it\n");
-  printf ("under certain conditions; type 'mbpoll -w' for details.\n\n");
+  printw ("Copyright © 2015-2019 %s, %s\n", AUTHORS, WEBSITE);
+  printw ("This program comes with ABSOLUTELY NO WARRANTY.\n");
+  printw ("This is free software, and you are welcome to redistribute it\n");
+  printw ("under certain conditions; type 'mbpoll -w' for details.\n\n");
+  refresh();
 }
 
 // -----------------------------------------------------------------------------
@@ -1575,12 +1668,12 @@ vPrintIntList (int * iList, int iLen) {
   int i;
   putchar ('[');
   for (i = 0; i < iLen; i++) {
-    printf ("%d", iList[i]);
+    printw ("%d", iList[i]);
     if (i != (iLen - 1)) {
-      putchar (',');
+      addch (',');
     }
     else {
-      putchar (']');
+      addch (']');
     }
   }
 }
@@ -1697,7 +1790,7 @@ iGetIntList (const char * name, const char * sList, int * iLen) {
 #ifdef DEBUG
     if (ctx.bIsVerbose) {
       vPrintIntList (iList, iCount);
-      putchar ('\n');
+      addch ('\n');
     }
 #endif
   }
